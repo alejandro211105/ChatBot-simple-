@@ -1,106 +1,93 @@
 """
-Chatbot simple usando Qwen2.5-0.5B-Instruct y Gradio.
-Interfaz estilo chat sin memoria de conversacion.
+Chatbot con memoria de conversacion en sesion actual usando Qwen2.5-0.5B-Instruct y Gradio.
+No persiste datos entre sesiones.
 """
 
 import gradio as gr
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-# --- Configuracion del modelo ---
-NOMBRE_MODELO = "Qwen/Qwen2.5-0.5B-Instruct"
-MAX_TOKENS_RESPUESTA = 512
+# Configuracion del modelo
+MODEL_NAME = "Qwen/Qwen2.5-0.5B-Instruct"
+MAX_NEW_TOKENS = 512
+SYSTEM_PROMPT = (
+    "Eres un asistente virtual util y amigable. "
+    "Responde de forma clara y concisa. "
+    "Si te hablan en espanol, responde en espanol."
+)
 
 
-def cargar_modelo():
-    """Carga el modelo y el tokenizador desde HuggingFace.
-    La primera ejecucion descargara los pesos (~1 GB).
-    """
-    print(f"[...] Cargando modelo '{NOMBRE_MODELO}'...")
+def load_model():
+    """Carga modelo y tokenizador desde HuggingFace."""
+    print(f"[...] Cargando modelo '{MODEL_NAME}'...")
 
-    tokenizador = AutoTokenizer.from_pretrained(NOMBRE_MODELO)
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    model = AutoModelForCausalLM.from_pretrained(MODEL_NAME)
+    model.eval()
 
-    # Cargar el modelo en CPU
-    modelo = AutoModelForCausalLM.from_pretrained(NOMBRE_MODELO)
-    modelo.eval()
-
-    print("[OK] Modelo cargado correctamente.")
-    return modelo, tokenizador
+    print("[OK] Modelo cargado.")
+    return model, tokenizer
 
 
-def responder(mensaje, historial):
-    """Genera una respuesta a la pregunta del usuario. Sin memoria de conversacion.
-    El parametro historial es requerido por ChatInterface pero no se usa.
+def respond(message, history):
+    """Genera respuesta usando historial de la sesion actual.
 
     Args:
-        mensaje: Texto ingresado por el usuario.
-        historial: Ignorado. No se usa memoria.
+        message: Texto del usuario.
+        history: Lista de [user, assistant] de la sesion actual.
 
     Returns:
-        Respuesta generada por el modelo.
+        Respuesta generada.
     """
-    if not mensaje or not mensaje.strip():
+    if not message or not message.strip():
         return "Por favor, escribe una pregunta."
 
-    # Construir mensajes simples (sin historial, cada pregunta es independiente)
-    mensajes = [
-        {
-            "role": "system",
-            "content": (
-                "Eres un asistente virtual util y amigable. "
-                "Responde de forma clara y concisa. "
-                "Si te hablan en espanol, responde en espanol."
-            ),
-        },
-        {"role": "user", "content": mensaje},
-    ]
+    # Construir mensajes con historial
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    for user_msg, assistant_msg in history:
+        messages.append({"role": "user", "content": user_msg})
+        messages.append({"role": "assistant", "content": assistant_msg})
+    messages.append({"role": "user", "content": message})
 
-    # Preparar la entrada usando la plantilla de chat del modelo
-    texto_entrada = tokenizador.apply_chat_template(
-        mensajes,
+    # Preparar entrada con plantilla de chat
+    input_text = tokenizer.apply_chat_template(
+        messages,
         tokenize=False,
         add_generation_prompt=True,
     )
 
-    # Tokenizar la entrada
-    entradas = tokenizador(
-        [texto_entrada],
-        return_tensors="pt",
-    ).to(modelo.device)
+    # Tokenizar
+    inputs = tokenizer([input_text], return_tensors="pt").to(model.device)
 
-    # Generar la respuesta
-    salidas = modelo.generate(
-        **entradas,
-        max_new_tokens=MAX_TOKENS_RESPUESTA,
+    # Generar respuesta
+    outputs = model.generate(
+        **inputs,
+        max_new_tokens=MAX_NEW_TOKENS,
         do_sample=True,
         temperature=0.7,
         top_p=0.9,
     )
 
-    # Decodificar solo los tokens nuevos (sin el prompt)
-    tokens_generados = salidas[0][entradas["input_ids"].shape[-1]:]
-    respuesta = tokenizador.decode(tokens_generados, skip_special_tokens=True)
+    # Decodificar solo tokens nuevos
+    generated = outputs[0][inputs["input_ids"].shape[-1]:]
+    response = tokenizer.decode(generated, skip_special_tokens=True)
 
-    return respuesta
+    return response
 
 
-# --- Punto de entrada principal ---
 if __name__ == "__main__":
-    # Cargar el modelo al iniciar
-    modelo, tokenizador = cargar_modelo()
+    model, tokenizer = load_model()
 
-    # Interfaz estilo chat (similar a ChatGPT)
-    interfaz = gr.ChatInterface(
-        fn=responder,
-        title="ChatBot Simple",
+    interface = gr.ChatInterface(
+        fn=respond,
+        title="ChatBot con Memoria",
         chatbot=gr.Chatbot(height=500),
         textbox=gr.Textbox(placeholder="Escribe tu mensaje aqui...", scale=7),
     )
 
-    # Lanzar la aplicacion
     print("\n[>>] Iniciando servidor...")
-    interfaz.launch(
-        server_name="127.0.0.1",  # Solo accesible desde este equipo
+    interface.launch(
+        server_name="127.0.0.1",
         server_port=7860,
         share=False,
-        inbrowser=True,           # Abre el navegador automaticamente
+        inbrowser=True,
     )
